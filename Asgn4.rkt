@@ -6,14 +6,14 @@
 
 (require typed/rackunit)
 
-(struct FundefC ([name : Sexp] [arg : Sexp] [body : ExprC])
+(struct FundefC ([name : Sexp] [args : (Listof Sexp)] [body : ExprC])
   #:transparent)
 (define-type ExprC (U NumC IdC AppC BinopC leq0 FundefC))
 (struct NumC ([n : Real])
    #:transparent)
 (struct IdC ([s : Symbol])
    #:transparent)
-(struct AppC ([arg : ExprC] [val : ExprC])
+(struct AppC ([f : ExprC] [args : (Listof ExprC)])
    #:transparent)
 (struct BinopC ([op : binop] [l : ExprC] [r : ExprC])
    #:transparent)
@@ -33,11 +33,11 @@
       (error 'binop? "VVQS given op was not a symbol ~e" v)))
 
 ; test cases for binop?
-(check-true (binop? '+))
-(check-true (binop? '-))
-(check-true (binop? '*))
-(check-true (binop? '/))
-(check-false (binop? 's))
+(check-equal? (binop? '+) #t)
+(check-equal? (binop? '-) #t)
+(check-equal? (binop? '*) #t)
+(check-equal? (binop? '/) #t)
+(check-equal? (binop? 's) #f)
 (check-exn (regexp (regexp-quote "VVQS given op was not a symbol"))
            (lambda () (binop? 1)))
 
@@ -45,40 +45,36 @@
 ; ---------------------------------------------------
 ; Parser and tests
 
+; This function takes a list of S-expressions as input and returns a list of ExprC
+(define (parse-args [args : (Listof Sexp)]) : (Listof ExprC)
+  (if (null? args)
+      '()
+      (cons (parse (car args)) (parse-args (cdr args)))))
+
 ; the parse function will take in an s-expression and modify it to create an ExprC
 (define (parse [s : Sexp]) : ExprC
   (match s
     [(? real? n) (NumC n)]
     [(? symbol? s) (IdC s)]
-    [(list op arg1 arg2)
-     (match op
-       [(? binop? op) (BinopC (cast op binop) (parse arg1) (parse arg2))]
-       [_ (error 'parse "VVQS invalid list input ~e" s)])]
-    [(list f arg) (AppC (parse f) (parse arg))]
     [(list 'leq0? test 'then then 'else else)
      (leq0 (parse test) (parse then) (parse else))]
+    [(list op arg1 arg2)
+     (cond
+       [(binop? op)
+        (BinopC (cast op binop) (parse arg1) (parse arg2))]
+       [else (AppC (parse op) (parse-args (list arg1 arg2)))])]
+    [(? list? s) (let ([f (car s)]
+                    [args (parse-args (cdr s))])
+                   (AppC (parse f) args))]
     [_ (error 'parse "VVQS invalid input ~e" s)]))
 
-
-; Custom comparison function for ExprC instances
-(define (exprc-equal? [e1 : ExprC] [e2 : ExprC]) : Boolean
-  (match* (e1 e2)
-    [((BinopC op1 l1 r1) (BinopC op2 l2 r2)) (and (eq? op1 op2) (exprc-equal? l1 l2) (exprc-equal? r1 r2))]
-    [((IdC s1) (IdC s2)) (eq? s1 s2)]
-    [((FundefC n1 a1 b1) (FundefC n2 a2 b2)) (and (eq? n1 n2) (eq? a1 a2) (exprc-equal? b1 b2))]
-    [((NumC n1) (NumC n2)) (= n1 n2)]
-    [((AppC a1 a2) (AppC b1 b2)) (and (exprc-equal? a1 b1) (exprc-equal? a2 b2))]))
-
 ; test cases for exprc-equal? and parse
-(check-true (exprc-equal? (parse '(+ 1 2)) (BinopC '+ (NumC 1) (NumC 2))))
-(check-true (exprc-equal? (parse '(* 3 4)) (BinopC '* (NumC 3) (NumC 4))))
-(check-true (exprc-equal? (parse '(/ 10 5)) (BinopC '/ (NumC 10) (NumC 5))))
-(check-false (exprc-equal? (parse '(/ 10 5)) (BinopC '- (NumC 10) (NumC 5))))
-(check-true (exprc-equal? (parse '(f 12)) (AppC (IdC 'f) (NumC 12))))
+(check-equal? (parse '(+ 1 2)) (BinopC '+ (NumC 1) (NumC 2)))
+(check-equal? (parse '(* 3 4)) (BinopC '* (NumC 3) (NumC 4)))
+(check-equal? (parse '(/ 10 5)) (BinopC '/ (NumC 10) (NumC 5)))
+(check-equal? (parse '(f 12)) (AppC (IdC 'f) (list (NumC 12))))
 (check-exn (regexp (regexp-quote "VVQS invalid input"))
-           (lambda () (parse '(1))))
-(check-exn (regexp (regexp-quote "VVQS invalid list input"))
-           (lambda () (parse (cast '(l 2 3) Sexp))))
+           (lambda () (parse #t)))
 
 ; ---------------------------------------------------
 ; Interpreter and tests
@@ -94,45 +90,53 @@
     ))
 
 ; Takes in an ExprC and evaluates it
-(define (interp [exp : ExprC] [funs : (Listof FundefC)]) : Real
-  (match exp
+(define (interp [e : Any] [funs : (Listof FundefC)]) : Real
+  (match e
     [(NumC n) n]
-    [(IdC s) (error 'interp "VVQS unbound identifier: ~a" s)]
-    [(BinopC op l r) (binop-exec exp)]
-    [(FundefC n a b) (interp b funs)]
-    [(AppC f a)
-     (define f-fn (find-function f funs))
-     (match f-fn
-       [(FundefC n arg body) (interp (subst arg a body) funs)]
-       [_ (error 'interp "VVQS function not found: ~a" f)])]
+    [(IdC s) (error 'interp "VVQS incorrect identifier: ~a" s)]
+    [(BinopC op e1 e2)
+     (binop-exec e)]
     [(leq0 test then else)
      (if (<= (interp test funs) 0)
          (interp then funs)
          (interp else funs))]
-    ))
+    [(AppC f args)
+     (define f-fn (find-function f funs))
+     (match f-fn
+       [(FundefC n formals body)
+        (if (= (length formals) (length args))
+            (interp (subst-all formals (map (λ (e) (NumC (interp e funs))) args) body) funs)
+            ; !!! Get a test case for this working!!!!
+            (error 'interp "VVQS argument mismatch: ~a" f))]
+       [_ (error 'interp "VVQS function not found: ~a" f)])]
+    [_ (error 'interp "VVQS invalid input: ~a" e)]))
+
 
 (check-equal? (interp (NumC 2) '()) 2)
 (check-equal? (interp (parse '(+ 1 2)) '()) 3)
 (check-equal? (interp (parse '(* 3 4)) '()) 12)
 (check-equal? (interp (parse '(- 2 1)) '()) 1)
 (check-equal? (interp (parse '(/ 3 3)) '()) 1)
-(check-equal? (interp (FundefC 'a 'b  (parse '(/ 3 3))) '()) 1)
-(check-exn (regexp (regexp-quote "VVQS unbound identifier:"))
+;(check-equal? (interp (FundefC 'a '(b)  (parse '(/ 3 3))) '()) 1)
+(check-exn (regexp (regexp-quote "VVQS incorrect identifier:"))
            (lambda () (interp (IdC 'a) '())))
-
+;(check-exn (regexp (regexp-quote "VVQS argument mismatch:"))
+;          (lambda () (interp (AppC (IdC 'f) (list (NumC 1))) (list (FundefC 'f (list 'x) (NumC 1))))))
+(check-exn (regexp (regexp-quote "VVQS invalid input:"))
+           (lambda () (interp '() '())))
 
 ; ---------------------------------------------------
 
 ; Parses a given function definition
 (define (parse-fundef [s : Sexp]) : FundefC
   (match s
-    [(list 'def (list fun-name arg) '= body) 
-     (FundefC fun-name arg (parse body))]
+    [(list 'def (list fun-name args ...) '= body)
+     (FundefC fun-name args (parse body))]
     [_ (error 'parse-fundef "VVQS invalid input ~e" s)]))
 
+
 ; Test cases for parse-fundef
-(check-true (exprc-equal? (parse-fundef '{def {addone x} = {+ x 1}})
-                          (FundefC 'addone 'x (BinopC '+ (IdC 'x) (NumC 1)))))
+(check-equal? (parse-fundef '{def {add x y} = {+ x y}}) (FundefC 'add '(x y) (BinopC '+ (IdC 'x) (IdC 'y))))
 (check-exn (regexp (regexp-quote "VVQS invalid input"))
            (lambda () (parse-fundef 'a)))
 
@@ -153,11 +157,11 @@
 ; Test cases for parse-prog
 
 (check-equal? (parse-prog '{{def {f x} = {+ x 14}}})
-              (list (FundefC 'f 'x (BinopC '+ (IdC 'x) (NumC 14)))))
+              (list (FundefC 'f (list (quote x)) (BinopC '+ (IdC (quote x)) (NumC 14)))))
 (check-equal? (parse-prog '{{def {f x} = {+ x 14}}
                              {def {main init} = {f 2}}})
-              (list (FundefC 'f 'x (BinopC '+ (IdC 'x) (NumC 14)))
-                    (FundefC 'main 'init (AppC (IdC 'f) (NumC 2)))))
+              (list (FundefC 'f (list (quote x)) (BinopC '+ (IdC (quote x)) (NumC 14)))
+                    (FundefC 'main (list (quote init)) (AppC (IdC 'f) (list (NumC 2))))))
 (check-equal? (parse-prog '()) '())
 (check-exn (regexp (regexp-quote "VVQS invalid input type"))
            (lambda () (parse-prog 'a)))
@@ -170,7 +174,7 @@
 ; Interprets the function named main from the function definitions.
 (define (interp-fns [funs : (Listof FundefC)]) : Real
   (define main-fn (find-main funs))
-  (interp (AppC (IdC 'main) (NumC 0)) funs))
+  (interp (AppC (IdC 'main) (list (NumC 0))) funs))
 
 ; Finds the function named main in the list of FundefC
 (define (find-main [funs : (Listof FundefC)]) : FundefC
@@ -189,10 +193,15 @@
                              (parse-prog '{{def {f x} = {+ x 14}}
                                            {def {main init} = {f 2}}})) #f)
 (check-exn (regexp (regexp-quote "VVQS function not found:"))
-           (lambda () (interp (AppC (IdC 'a) (NumC 3))
+           (lambda () (interp (AppC (IdC 'a) (list(NumC 3)))
                               (parse-prog '{{def {f x} = {+ x 14}}
                                            {def {main init} = {f 2}}}))))
 
+
+; Substitute all the arguments
+(define (subst-all [args : (Listof Sexp)] [vals : (Listof ExprC)] [body : ExprC]) : ExprC
+  (cond [(empty? args) body]
+        [else (subst-all (rest args) (rest vals) (subst (first args) (first vals) body))]))
 
 ; Substitutes the given argument with the given value in the body of the function.
 (define (subst [arg : Sexp] [val : ExprC] [body : ExprC]) : ExprC
@@ -200,16 +209,21 @@
     [(NumC n) body]
     [(IdC s) (if (eq? s arg) val body)]
     [(BinopC op l r) (BinopC op (subst arg val l) (subst arg val r))]
-    [(AppC f a) (AppC (subst arg val f) (subst arg val a))]
+    [(AppC f (list args ...)) (AppC (subst arg val f) (map (λ ([x : ExprC]) (subst arg val x)) args))]
     [(leq0 test then else)
      (leq0 (subst arg val test) (subst arg val then) (subst arg val else))]))
 
 (check-equal? (interp-fns (parse-prog '{{def {f x} = {+ x 14}}
                                         {def {main init} = {f 2}}}))
               16)
-(check-equal? (interp-fns (list (FundefC 'main 'init (NumC 2)))) 2)
+(check-equal? (interp-fns (list (FundefC 'main (list (quote init)) (NumC 2)))) 2)
+; !!! Get this working!!!!
+;(check-equal? (interp-fns
+;               (parse-prog '{{def {f} = 5}
+;                             {def {main} = {+ {f} {f}}}}))
+;              10)
 (check-exn (regexp (regexp-quote "VVQS main function not found"))
-           (lambda () (interp-fns (list (FundefC 'not-main 'init (NumC 2))))))
+           (lambda () (interp-fns (list (FundefC 'not-main (list (quote init)) (NumC 2))))))
 
 ; ---------------------------------------------------
 
@@ -217,6 +231,9 @@
 (define (top-interp [fun-sexps : Sexp]) : Real
   (interp-fns (parse-prog fun-sexps)))
 
+(check-equal? (top-interp '{{def {f x y} = {+ x y}}
+                            {def {main init} = {f 2 3}}})
+              5)
 (check-equal? (top-interp '{{def {f x} = {+ x 14}}
                             {def {main init} = {f 2}}})
               16)
@@ -230,6 +247,7 @@
                             (def (main init) = (twice 15)) 
                             (def (twice x) = (realtwice x))))
               30)
+
 
 
 
