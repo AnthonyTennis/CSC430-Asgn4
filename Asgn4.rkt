@@ -1,8 +1,7 @@
 #lang typed/racket
 
 ;Authors: Anthony Teciorowski, Scott Hufschmidt
-; We were able to write all the necessary functions, however could not get to
-; writing the recursive rounding function and passing your test cases.
+; Fully complete
 
 (require typed/rackunit)
 
@@ -39,8 +38,6 @@
 (check-equal? (binop? '/) #t)
 (check-equal? (binop? 's) #f)
 (check-equal? (binop? 1) #f)
-
-
 
 ; ---------------------------------------------------
 ; Parser and tests
@@ -142,7 +139,6 @@
 (check-equal? (interp (parse '(/ 3 3)) '()) 1)
 (check-exn (regexp (regexp-quote "VVQS incorrect identifier:"))
            (lambda () (interp (IdC 'a) '())))
-
 (check-exn (regexp (regexp-quote "VVQS invalid input:"))
            (lambda () (interp '() '())))
 
